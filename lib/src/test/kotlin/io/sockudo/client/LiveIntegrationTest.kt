@@ -43,12 +43,13 @@ class LiveIntegrationTest {
                         wsHost = "127.0.0.1",
                         wsPort = 6001,
                         wssPort = 6001,
+                        wireFormat = liveWireFormat(),
                     ),
                 )
 
             val channel = client.subscribe("public-updates")
             client.bind("connected") { _, _ -> connected.set(true) }
-            channel.bind("pusher:subscription_succeeded") { _, _ -> subscribed.set(true) }
+            channel.bind("sockudo:subscription_succeeded") { _, _ -> subscribed.set(true) }
             channel.bind("integration-event") { data, _ -> received.set(data as? Map<*, *>) }
 
             client.connect()
@@ -93,6 +94,7 @@ class LiveIntegrationTest {
                         wsHost = "127.0.0.1",
                         wsPort = 6001,
                         wssPort = 6001,
+                        wireFormat = liveWireFormat(),
                         deltaCompression = DeltaOptions(enabled = true),
                     ),
                 )
@@ -103,7 +105,7 @@ class LiveIntegrationTest {
                     SubscriptionOptions(delta = ChannelDeltaSettings(enabled = true)),
                 )
             client.bind("connected") { _, _ -> connected.set(true) }
-            channel.bind("pusher:subscription_succeeded") { _, _ -> subscribed.set(true) }
+            channel.bind("sockudo:subscription_succeeded") { _, _ -> subscribed.set(true) }
             channel.bind("price-updated") { data, _ ->
                 val map = data as? Map<*, *> ?: return@bind
                 prices += (map["price"] as Number).toLong()
@@ -164,6 +166,7 @@ class LiveIntegrationTest {
                         wsHost = "127.0.0.1",
                         wsPort = 6001,
                         wssPort = 6001,
+                        wireFormat = liveWireFormat(),
                         channelAuthorization =
                             ChannelAuthorizationOptions(
                                 customHandler =
@@ -184,7 +187,7 @@ class LiveIntegrationTest {
 
             val channel = client.subscribe("private-encrypted-live")
             client.bind("connected") { _, _ -> connected.set(true) }
-            channel.bind("pusher:subscription_succeeded") { _, _ -> subscribed.set(true) }
+            channel.bind("sockudo:subscription_succeeded") { _, _ -> subscribed.set(true) }
             channel.bind("encrypted-event") { data, _ -> received.set(data as? Map<*, *>) }
 
             client.connect()
@@ -223,6 +226,13 @@ class LiveIntegrationTest {
     }
 
     private fun liveTestsEnabled(): Boolean = System.getenv("SOCKUDO_LIVE_TESTS") == "1"
+
+    private fun liveWireFormat(): SockudoWireFormat =
+        when (System.getenv("SOCKUDO_WIRE_FORMAT")?.lowercase()) {
+            "messagepack", "msgpack" -> SockudoWireFormat.messagepack
+            "protobuf", "proto" -> SockudoWireFormat.protobuf
+            else -> SockudoWireFormat.json
+        }
 
     private fun publishToLocalSockudo(channel: String, eventName: String, payload: Map<String, Any>) {
         val bodyObject =

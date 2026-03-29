@@ -17,6 +17,9 @@ dependencies {
     api(libs.coroutines.core)
     api(libs.kotlinx.serialization.json)
     api(libs.okhttp)
+    implementation(libs.msgpack.core)
+    implementation(libs.okio)
+    implementation(libs.protobuf.java)
     implementation(libs.tweetnacl)
     implementation(libs.vcdiff)
     runtimeOnly(libs.slf4j.nop)
@@ -24,6 +27,7 @@ dependencies {
     testImplementation(libs.kotlin.test)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.junit.jupiter)
+    testImplementation(libs.okhttp.mockwebserver)
 }
 
 java {
