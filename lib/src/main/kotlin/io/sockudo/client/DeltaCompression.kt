@@ -78,6 +78,7 @@ private class ChannelState(
 internal class DeltaCompressionManager(
     private val options: DeltaOptions,
     private val sendEvent: (String, Any) -> Boolean,
+    private val prefix: ProtocolPrefix = ProtocolPrefix(2),
 ) {
     private val channelStates = linkedMapOf<String, ChannelState>()
     private var enabled = false
@@ -89,7 +90,7 @@ internal class DeltaCompressionManager(
             return
         }
         sendEvent(
-            "pusher:enable_delta_compression",
+            prefix.event("enable_delta_compression"),
             mapOf("algorithms" to options.algorithms.map { it.name }),
         )
     }
@@ -217,7 +218,7 @@ internal class DeltaCompressionManager(
     }
 
     private fun requestResync(channel: String) {
-        sendEvent("pusher:delta_sync_error", mapOf("channel" to channel))
+        sendEvent(prefix.event("delta_sync_error"), mapOf("channel" to channel))
         channelStates.remove(channel)
     }
 

@@ -29,7 +29,7 @@ fun interface UserAuthenticationHandler {
 }
 
 data class ChannelAuthorizationOptions(
-    val endpoint: String = "/pusher/auth",
+    val endpoint: String = "/sockudo/auth",
     val headers: Map<String, String> = emptyMap(),
     val params: Map<String, AuthValue> = emptyMap(),
     val headersProvider: (() -> Map<String, String>)? = null,
@@ -38,7 +38,7 @@ data class ChannelAuthorizationOptions(
 )
 
 data class UserAuthenticationOptions(
-    val endpoint: String = "/pusher/user-auth",
+    val endpoint: String = "/sockudo/user-auth",
     val headers: Map<String, String> = emptyMap(),
     val params: Map<String, AuthValue> = emptyMap(),
     val headersProvider: (() -> Map<String, String>)? = null,

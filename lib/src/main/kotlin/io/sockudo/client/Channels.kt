@@ -79,11 +79,11 @@ open class SockudoChannel internal constructor(
             auth.channelData?.let { payload["channel_data"] = it }
             filter?.let { payload["tags_filter"] = JsonSupport.fromJsonElement(JsonSupport.toJsonElement(it)) }
             deltaSettings?.let { payload["delta"] = it.subscriptionValue() }
-            client.sendEvent("pusher:subscribe", payload, null)
+            client.sendEvent(client.p.event("subscribe"), payload, null)
         } catch (error: Throwable) {
             subscriptionPending = false
             dispatcher.emit(
-                "pusher:subscription_error",
+                client.p.event("subscription_error"),
                 mapOf(
                     "type" to "AuthError",
                     "error" to (error.message ?: "Unknown auth error"),
@@ -94,7 +94,7 @@ open class SockudoChannel internal constructor(
 
     internal open fun unsubscribe() {
         isSubscribed = false
-        client.sendEvent("pusher:unsubscribe", mapOf("channel" to name), null)
+        client.sendEvent(client.p.event("unsubscribe"), mapOf("channel" to name), null)
     }
 
     internal open fun disconnect() {
@@ -103,24 +103,25 @@ open class SockudoChannel internal constructor(
     }
 
     internal open fun handle(event: SockudoEvent) {
-        when (event.event) {
-            "pusher_internal:subscription_succeeded" -> {
+        val p = client.p
+        when {
+            event.event == p.internal_("subscription_succeeded") -> {
                 subscriptionPending = false
                 isSubscribed = true
                 if (subscriptionCancelled) {
                     client.unsubscribe(name)
                 } else {
-                    dispatcher.emit("pusher:subscription_succeeded", event.data)
+                    dispatcher.emit(p.event("subscription_succeeded"), event.data)
                 }
             }
 
-            "pusher_internal:subscription_count" -> {
+            event.event == p.internal_("subscription_count") -> {
                 subscriptionCount = (event.data as? Map<*, *>)?.get("subscription_count") as? Int
-                dispatcher.emit("pusher:subscription_count", event.data)
+                dispatcher.emit(p.event("subscription_count"), event.data)
             }
 
             else -> {
-                if (!event.event.startsWith("pusher_internal:")) {
+                if (!p.isInternalEvent(event.event)) {
                     dispatcher.emit(event.event, event.data, EventMetadata(userId = event.userId))
                 }
             }
@@ -221,8 +222,9 @@ class PresenceChannel internal constructor(
     }
 
     override fun handle(event: SockudoEvent) {
-        when (event.event) {
-            "pusher_internal:subscription_succeeded" -> {
+        val p = client.p
+        when {
+            event.event == p.internal_("subscription_succeeded") -> {
                 subscriptionPending = false
                 isSubscribed = true
                 if (subscriptionCancelled) {
@@ -230,23 +232,23 @@ class PresenceChannel internal constructor(
                 } else {
                     val payload = event.data as? Map<String, Any?> ?: emptyMap()
                     members.applySubscriptionData(payload)
-                    dispatcher.emit("pusher:subscription_succeeded", members)
+                    dispatcher.emit(p.event("subscription_succeeded"), members)
                 }
             }
 
-            "pusher_internal:subscription_count" -> super.handle(event)
-            "pusher_internal:member_added" -> {
+            event.event == p.internal_("subscription_count") -> super.handle(event)
+            event.event == p.internal_("member_added") -> {
                 val payload = event.data as? Map<String, Any?> ?: return
-                members.add(payload)?.let { dispatcher.emit("pusher:member_added", it) }
+                members.add(payload)?.let { dispatcher.emit(p.event("member_added"), it) }
             }
 
-            "pusher_internal:member_removed" -> {
+            event.event == p.internal_("member_removed") -> {
                 val payload = event.data as? Map<String, Any?> ?: return
-                members.remove(payload)?.let { dispatcher.emit("pusher:member_removed", it) }
+                members.remove(payload)?.let { dispatcher.emit(p.event("member_removed"), it) }
             }
 
             else -> {
-                if (!event.event.startsWith("pusher_internal:")) {
+                if (!p.isInternalEvent(event.event)) {
                     dispatcher.emit(event.event, event.data, EventMetadata(userId = event.userId))
                 }
             }
@@ -283,7 +285,7 @@ class EncryptedChannel internal constructor(
     }
 
     internal override fun handle(event: SockudoEvent) {
-        if (event.event.startsWith("pusher_internal:") || event.event.startsWith("pusher:")) {
+        if (client.p.isInternalEvent(event.event) || client.p.isPlatformEvent(event.event)) {
             super.handle(event)
             return
         }

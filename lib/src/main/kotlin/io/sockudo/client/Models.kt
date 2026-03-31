@@ -5,6 +5,15 @@ import kotlin.time.Duration.Companion.seconds
 
 enum class SockudoTransport { ws, wss }
 
+enum class SockudoWireFormat(
+    val queryValue: String,
+    val isBinary: Boolean,
+) {
+    json("json", false),
+    messagepack("messagepack", true),
+    protobuf("protobuf", true),
+}
+
 enum class ConnectionState {
     INITIALIZED,
     CONNECTING,
@@ -52,9 +61,17 @@ data class ChannelDeltaSettings(
         }
 }
 
+data class MessageExtras(
+    val headers: Map<String, Any>? = null,
+    val ephemeral: Boolean? = null,
+    val idempotencyKey: String? = null,
+    val echo: Boolean? = null,
+)
+
 data class SubscriptionOptions(
     val filter: FilterNode? = null,
     val delta: ChannelDeltaSettings? = null,
+    val events: List<String>? = null,
 )
 
 data class DeltaOptions(
@@ -94,6 +111,7 @@ data class PresenceMember(
 
 data class SockudoOptions(
     val cluster: String,
+    val protocolVersion: Int = 2,
     val activityTimeout: Duration = 120.seconds,
     val forceTls: Boolean? = null,
     val enabledTransports: List<SockudoTransport>? = null,
@@ -105,13 +123,18 @@ data class SockudoOptions(
     val httpHost: String? = null,
     val httpPort: Int = 80,
     val httpsPort: Int = 443,
-    val httpPath: String = "/pusher",
+    val httpPath: String = "/sockudo",
     val pongTimeout: Duration = 30.seconds,
     val unavailableTimeout: Duration = 10.seconds,
     val enableStats: Boolean = false,
-    val statsHost: String = "stats.pusher.com",
+    val statsHost: String = "stats.sockudo.io",
     val timelineParams: Map<String, AuthValue> = emptyMap(),
     val channelAuthorization: ChannelAuthorizationOptions = ChannelAuthorizationOptions(),
     val userAuthentication: UserAuthenticationOptions = UserAuthenticationOptions(),
     val deltaCompression: DeltaOptions? = null,
+    val messageDeduplication: Boolean = true,
+    val messageDeduplicationCapacity: Int = 1000,
+    val connectionRecovery: Boolean = false,
+    val echoMessages: Boolean = true,
+    val wireFormat: SockudoWireFormat = SockudoWireFormat.json,
 )

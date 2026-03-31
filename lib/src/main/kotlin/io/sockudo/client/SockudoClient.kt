@@ -7,8 +7,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -17,6 +15,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okhttp3.MediaType.Companion.toMediaType
+import okio.ByteString.Companion.toByteString
 import java.net.URI
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration
@@ -35,6 +34,7 @@ class SockudoClient(
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    internal val p = ProtocolPrefix(options.protocolVersion)
     internal val config = ResolvedConfiguration(options, httpClient)
     private val dispatcher = EventDispatcher()
     private val channels = linkedMapOf<String, SockudoChannel>()
@@ -47,10 +47,13 @@ class SockudoClient(
     private var manuallyDisconnected: Boolean = false
     private val deltaManager: DeltaCompressionManager? =
         options.deltaCompression?.let { deltaOptions ->
-            DeltaCompressionManager(deltaOptions) { event, data ->
+            DeltaCompressionManager(deltaOptions, { event, data ->
                 sendEvent(event, data, null)
-            }
+            }, p)
         }
+    private val deduplicator: MessageDeduplicator? =
+        if (options.messageDeduplication) MessageDeduplicator(options.messageDeduplicationCapacity) else null
+    private val channelSerials = linkedMapOf<String, Int>()
 
     val user = UserFacade()
     val watchlist = WatchlistFacade()
@@ -117,6 +120,7 @@ class SockudoClient(
 
             else -> channels.remove(channelName)
         }
+        channelSerials.remove(channelName)
         deltaManager?.clearChannelState(channelName)
     }
 
@@ -172,7 +176,11 @@ class SockudoClient(
             "data" to data,
         )
         channel?.let { payload["channel"] = it }
-        return socket.send(JsonSupport.encode(payload))
+        return when (val encoded = ProtocolCodec.encodeEnvelope(payload, options.wireFormat)) {
+            is String -> socket.send(encoded)
+            is ByteArray -> socket.send(encoded.toByteString())
+            else -> false
+        }
     }
 
     private fun subscribeAll() {
@@ -206,6 +214,10 @@ class SockudoClient(
                         handleRawMessage(text)
                     }
 
+                    override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
+                        handleRawMessage(bytes)
+                    }
+
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                         dispatcher.emit("error", t)
                         handleSocketClosed(1006, t.message)
@@ -218,12 +230,24 @@ class SockudoClient(
             )
     }
 
-    private fun handleRawMessage(rawMessage: String) {
+    private fun handleRawMessage(rawMessage: Any) {
         try {
             val event = decodeEvent(rawMessage)
+            if (event.messageId != null && deduplicator != null) {
+                if (deduplicator.isDuplicate(event.messageId)) {
+                    return
+                }
+                deduplicator.track(event.messageId)
+            }
             resetActivityTimer()
-            when (event.event) {
-                "pusher:connection_established" -> {
+            // Track serial per channel for connection recovery
+            if (options.connectionRecovery && event.channel != null && event.serial != null) {
+                channelSerials[event.channel] = event.serial
+            }
+
+            val eventName = event.event
+            when {
+                eventName == p.event("connection_established") -> {
                     val payload = event.data as? Map<*, *> ?: throw SockudoException.InvalidHandshake
                     val newSocketId = payload["socket_id"] as? String ?: throw SockudoException.InvalidHandshake
                     socketId = newSocketId
@@ -235,29 +259,36 @@ class SockudoClient(
                     clearUnavailableTimer()
                     updateState(ConnectionState.CONNECTED, mapOf("socket_id" to newSocketId))
                     subscribeAll()
+                    if (options.connectionRecovery && channelSerials.isNotEmpty()) {
+                        sendEvent(
+                            p.event("resume"),
+                            JsonSupport.encode(mapOf("channel_serials" to channelSerials)),
+                            null,
+                        )
+                    }
                     if (options.deltaCompression?.enabled == true) {
                         deltaManager?.enable()
                     }
                     user.handleConnected()
                 }
 
-                "pusher:error" -> dispatcher.emit("error", event.data)
-                "pusher:ping" -> sendEvent("pusher:pong", emptyMap<String, Any>(), null)
-                "pusher:pong" -> Unit
-                "pusher:signin_success" -> user.handleSignInSuccess(event.data)
-                "pusher_internal:watchlist_events" -> watchlist.handle(event.data)
-                "pusher:delta_compression_enabled" -> {
+                eventName == p.event("error") -> dispatcher.emit("error", event.data)
+                eventName == p.event("ping") -> sendEvent(p.event("pong"), emptyMap<String, Any>(), null)
+                eventName == p.event("pong") -> Unit
+                eventName == p.event("signin_success") -> user.handleSignInSuccess(event.data)
+                eventName == p.internal_("watchlist_events") -> watchlist.handle(event.data)
+                eventName == p.event("delta_compression_enabled") -> {
                     deltaManager?.handleEnabled(event.data)
-                    dispatcher.emit(event.event, event.data)
+                    dispatcher.emit(eventName, event.data)
                 }
 
-                "pusher:delta_cache_sync" -> {
+                eventName == p.event("delta_cache_sync") -> {
                     event.channel?.let { channelName ->
                         deltaManager?.handleCacheSync(channelName, event.data)
                     }
                 }
 
-                "pusher:delta" -> {
+                eventName == p.event("delta") -> {
                     event.channel?.let { channelName ->
                         val reconstructed = deltaManager?.handleDeltaMessage(channelName, event.data)
                         if (reconstructed != null) {
@@ -267,11 +298,25 @@ class SockudoClient(
                     }
                 }
 
+                eventName == p.event("resume_success") -> {
+                    SockudoLogger.debug("Connection recovery succeeded", event.data)
+                }
+
+                eventName == p.event("resume_failed") -> {
+                    val failData = event.data as? Map<*, *>
+                    val failedChannelName = failData?.get("channel") as? String
+                    if (failedChannelName != null) {
+                        channelSerials.remove(failedChannelName)
+                        SockudoLogger.warn("Connection recovery failed for channel", failedChannelName)
+                        channels[failedChannelName]?.subscribeIfPossible()
+                    }
+                }
+
                 else -> {
                     event.channel?.let { channelName ->
                         channels[channelName]?.handle(event)
-                        if (!event.event.startsWith("pusher:") &&
-                            !event.event.startsWith("pusher_internal:") &&
+                        if (!p.isPlatformEvent(eventName) &&
+                            !p.isInternalEvent(eventName) &&
                             event.sequence != null
                         ) {
                             deltaManager?.handleFullMessage(
@@ -282,8 +327,8 @@ class SockudoClient(
                             )
                         }
                     }
-                    if (!event.event.startsWith("pusher_internal:")) {
-                        dispatcher.emit(event.event, event.data, EventMetadata(event.userId))
+                    if (!p.isInternalEvent(eventName)) {
+                        dispatcher.emit(eventName, event.data, EventMetadata(event.userId))
                     }
                 }
             }
@@ -292,41 +337,10 @@ class SockudoClient(
         }
     }
 
-    private fun decodeEvent(rawMessage: String): SockudoEvent {
-        val envelope = JsonSupport.decode(rawMessage) as? JsonObject
-            ?: throw SockudoException.MessageParseError("Unable to decode event envelope")
-        val eventName = envelope["event"]?.let {
-            (it as? JsonPrimitive)?.content
-        } ?: throw SockudoException.MessageParseError("Unable to decode event envelope")
-        val rawData = envelope["data"]
-        val data =
-            when (rawData) {
-                is JsonPrimitive ->
-                    if (rawData.isString) {
-                        val content = rawData.content
-                        runCatching { JsonSupport.fromJsonElement(JsonSupport.decode(content)) }.getOrElse { content }
-                    } else {
-                        JsonSupport.fromJsonElement(rawData)
-                    }
+    private fun decodeEvent(rawMessage: Any): SockudoEvent = ProtocolCodec.decodeEvent(rawMessage, options.wireFormat)
 
-                null -> null
-                else -> JsonSupport.fromJsonElement(rawData)
-            }
-        return SockudoEvent(
-            event = eventName,
-            channel = (envelope["channel"] as? JsonPrimitive)?.content,
-            data = data,
-            userId = (envelope["user_id"] as? JsonPrimitive)?.content,
-            rawMessage = rawMessage,
-            sequence = (envelope["__delta_seq"] as? JsonPrimitive)?.content?.toIntOrNull()
-                ?: (envelope["sequence"] as? JsonPrimitive)?.content?.toIntOrNull(),
-            conflationKey = (envelope["__conflation_key"] as? JsonPrimitive)?.content
-                ?: (envelope["conflation_key"] as? JsonPrimitive)?.content,
-        )
-    }
-
-    private fun stripDeltaMetadata(rawMessage: String): String =
-        rawMessage
+    private fun stripDeltaMetadata(rawMessage: Any): String =
+        (rawMessage as? String ?: decodeEvent(rawMessage).rawMessage)
             .replace(Regex(""","__delta_seq":\d+"""), "")
             .replace(Regex(""""__delta_seq":\d+,"""), "")
             .replace(Regex(""","__conflation_key":"[^"]*"""), "")
@@ -374,7 +388,8 @@ class SockudoClient(
         val port = if (transport == SockudoTransport.wss) config.wssPort else config.wsPort
         val path = "${config.wsPath}/app/$key"
         val query = listOf(
-            "protocol=7",
+            "protocol=${p.version}",
+            *(if (options.protocolVersion >= 2) arrayOf("format=${options.wireFormat.queryValue}") else emptyArray()),
             "client=kotlin",
             "version=0.1.0",
             "flash=false",
@@ -395,7 +410,7 @@ class SockudoClient(
     }
 
     private fun sendPing() {
-        sendEvent("pusher:ping", emptyMap<String, Any>(), null)
+        sendEvent(p.event("ping"), emptyMap<String, Any>(), null)
         invalidateActivityTimer()
         activityJob =
             scope.launch {
@@ -538,7 +553,7 @@ class SockudoClient(
                     client.config.userAuthenticator.authenticate(UserAuthenticationRequest(socketId))
                 }.onSuccess { auth ->
                     client.sendEvent(
-                        "pusher:signin",
+                        client.p.event("signin"),
                         mapOf("auth" to auth.auth, "user_data" to auth.userData),
                         null,
                     )
@@ -552,7 +567,7 @@ class SockudoClient(
             val client = client ?: return
             val channel = SockudoChannel("#server-to-user-$userId", client)
             channel.onGlobal { eventName, data ->
-                if (!eventName.startsWith("pusher_internal:") && !eventName.startsWith("pusher:")) {
+                if (!client.p.isInternalEvent(eventName) && !client.p.isPlatformEvent(eventName)) {
                     dispatcher.emit(eventName, data)
                 }
             }
@@ -595,11 +610,11 @@ class SockudoClient(
         val cluster: String = options.cluster
         var activityTimeout: Duration = options.activityTimeout
         var useTls: Boolean = options.forceTls != false
-        val wsHost: String = options.wsHost ?: "ws-${options.cluster}.pusher.com"
+        val wsHost: String = options.wsHost ?: "ws-${options.cluster}.sockudo.io"
         val wsPort: Int = options.wsPort
         val wssPort: Int = options.wssPort
         val wsPath: String = options.wsPath
-        val httpHost: String = options.httpHost ?: "sockjs-${options.cluster}.pusher.com"
+        val httpHost: String = options.httpHost ?: "sockjs-${options.cluster}.sockudo.io"
         val httpPort: Int = options.httpPort
         val httpsPort: Int = options.httpsPort
         val httpPath: String = options.httpPath

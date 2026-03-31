@@ -171,7 +171,10 @@ internal data class SockudoEvent(
     val channel: String? = null,
     val data: Any? = null,
     val userId: String? = null,
+    val messageId: String? = null,
     val rawMessage: String,
     val sequence: Int? = null,
     val conflationKey: String? = null,
+    val serial: Int? = null,
+    val extras: MessageExtras? = null,
 )
