@@ -72,6 +72,54 @@ data class SubscriptionOptions(
     val filter: FilterNode? = null,
     val delta: ChannelDeltaSettings? = null,
     val events: List<String>? = null,
+    val rewind: SubscriptionRewind? = null,
+)
+
+sealed class SubscriptionRewind {
+    abstract fun subscriptionValue(): Any
+
+    data class Count(val count: Int) : SubscriptionRewind() {
+        override fun subscriptionValue(): Any = count
+    }
+
+    data class Seconds(val seconds: Int) : SubscriptionRewind() {
+        override fun subscriptionValue(): Any = linkedMapOf("seconds" to seconds)
+    }
+}
+
+data class RecoveryPosition(
+    val streamId: String? = null,
+    val serial: Long,
+    val lastMessageId: String? = null,
+)
+
+data class ResumeRecoveredChannel(
+    val channel: String,
+    val source: String,
+    val replayed: Int,
+)
+
+data class ResumeFailedChannel(
+    val channel: String,
+    val code: String,
+    val reason: String,
+    val expectedStreamId: String? = null,
+    val currentStreamId: String? = null,
+    val oldestAvailableSerial: Long? = null,
+    val newestAvailableSerial: Long? = null,
+)
+
+data class ResumeSuccessData(
+    val recovered: List<ResumeRecoveredChannel>,
+    val failed: List<ResumeFailedChannel>,
+)
+
+data class RewindCompleteData(
+    val historicalCount: Int,
+    val liveCount: Int,
+    val complete: Boolean,
+    val truncatedByRetention: Boolean,
+    val truncatedByLimit: Boolean,
 )
 
 data class DeltaOptions(

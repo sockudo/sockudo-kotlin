@@ -53,7 +53,7 @@ class SockudoClient(
         }
     private val deduplicator: MessageDeduplicator? =
         if (options.messageDeduplication) MessageDeduplicator(options.messageDeduplicationCapacity) else null
-    private val channelSerials = linkedMapOf<String, Int>()
+    private val channelPositions = linkedMapOf<String, RecoveryPosition>()
 
     val user = UserFacade()
     val watchlist = WatchlistFacade()
@@ -100,6 +100,7 @@ class SockudoClient(
         options?.let {
             channel.filter = it.filter
             channel.deltaSettings = it.delta
+            channel.rewind = it.rewind
         }
         channel.subscribeIfPossible()
         return channel
@@ -120,7 +121,7 @@ class SockudoClient(
 
             else -> channels.remove(channelName)
         }
-        channelSerials.remove(channelName)
+        channelPositions.remove(channelName)
         deltaManager?.clearChannelState(channelName)
     }
 
@@ -158,6 +159,26 @@ class SockudoClient(
 
     fun resetDeltaStats() {
         deltaManager?.resetStats()
+    }
+
+    fun getRecoveryPosition(channelName: String): RecoveryPosition? = channelPositions[channelName]
+
+    fun getRecoveryPositions(): Map<String, RecoveryPosition> = channelPositions.toMap()
+
+    fun setRecoveryPosition(
+        channelName: String,
+        position: RecoveryPosition?,
+    ) {
+        if (position == null) {
+            channelPositions.remove(channelName)
+        } else {
+            channelPositions[channelName] = position
+        }
+    }
+
+    fun setRecoveryPositions(positions: Map<String, RecoveryPosition>) {
+        channelPositions.clear()
+        channelPositions.putAll(positions)
     }
 
     fun close() {
@@ -242,7 +263,12 @@ class SockudoClient(
             resetActivityTimer()
             // Track serial per channel for connection recovery
             if (options.connectionRecovery && event.channel != null && event.serial != null) {
-                channelSerials[event.channel] = event.serial
+                channelPositions[event.channel] =
+                    RecoveryPosition(
+                        streamId = event.streamId,
+                        serial = event.serial,
+                        lastMessageId = event.messageId,
+                    )
             }
 
             val eventName = event.event
@@ -259,10 +285,21 @@ class SockudoClient(
                     clearUnavailableTimer()
                     updateState(ConnectionState.CONNECTED, mapOf("socket_id" to newSocketId))
                     subscribeAll()
-                    if (options.connectionRecovery && channelSerials.isNotEmpty()) {
+                    if (options.connectionRecovery && channelPositions.isNotEmpty()) {
                         sendEvent(
                             p.event("resume"),
-                            JsonSupport.encode(mapOf("channel_serials" to channelSerials)),
+                            JsonSupport.encode(
+                                mapOf(
+                                    "channel_positions" to
+                                        channelPositions.mapValues { (_, position) ->
+                                            linkedMapOf<String, Any?>(
+                                                "serial" to position.serial,
+                                                "stream_id" to position.streamId,
+                                                "last_message_id" to position.lastMessageId,
+                                            ).filterValues { it != null }
+                                        },
+                                ),
+                            ),
                             null,
                         )
                     }
@@ -299,36 +336,45 @@ class SockudoClient(
                 }
 
                 eventName == p.event("resume_success") -> {
-                    SockudoLogger.debug("Connection recovery succeeded", event.data)
+                    val data = decodeResumeSuccessData(event.data)
+                    SockudoLogger.debug("Connection recovery succeeded", data)
+                    dispatcher.emit(eventName, data)
                 }
 
                 eventName == p.event("resume_failed") -> {
-                    val failData = event.data as? Map<*, *>
-                    val failedChannelName = failData?.get("channel") as? String
-                    if (failedChannelName != null) {
-                        channelSerials.remove(failedChannelName)
+                    val failData = decodeResumeFailedData(event.data)
+                    val failedChannelName = failData.channel
+                    if (failedChannelName.isNotEmpty()) {
+                        channelPositions.remove(failedChannelName)
                         SockudoLogger.warn("Connection recovery failed for channel", failedChannelName)
                         channels[failedChannelName]?.subscribeIfPossible()
                     }
+                    dispatcher.emit(eventName, failData)
                 }
 
                 else -> {
-                    event.channel?.let { channelName ->
-                        channels[channelName]?.handle(event)
+                    val normalizedEvent =
+                        if (eventName == p.event("rewind_complete")) {
+                            event.copy(data = decodeRewindCompleteData(event.data))
+                        } else {
+                            event
+                        }
+                    normalizedEvent.channel?.let { channelName ->
+                        channels[channelName]?.handle(normalizedEvent)
                         if (!p.isPlatformEvent(eventName) &&
                             !p.isInternalEvent(eventName) &&
-                            event.sequence != null
+                            normalizedEvent.sequence != null
                         ) {
                             deltaManager?.handleFullMessage(
                                 channel = channelName,
                                 rawMessage = stripDeltaMetadata(rawMessage),
-                                sequence = event.sequence,
-                                conflationKey = event.conflationKey,
+                                sequence = normalizedEvent.sequence,
+                                conflationKey = normalizedEvent.conflationKey,
                             )
                         }
                     }
                     if (!p.isInternalEvent(eventName)) {
-                        dispatcher.emit(eventName, event.data, EventMetadata(event.userId))
+                        dispatcher.emit(eventName, normalizedEvent.data, EventMetadata(normalizedEvent.userId))
                     }
                 }
             }
@@ -407,6 +453,47 @@ class SockudoClient(
             transports = transports.filterNot { it in disabled }
         }
         return transports
+    }
+
+    private fun decodeResumeRecoveredChannel(raw: Any?): ResumeRecoveredChannel {
+        val map = raw as? Map<*, *> ?: emptyMap<Any?, Any?>()
+        return ResumeRecoveredChannel(
+            channel = map["channel"] as? String ?: "",
+            source = map["source"] as? String ?: "",
+            replayed = (map["replayed"] as? Number)?.toInt() ?: 0,
+        )
+    }
+
+    private fun decodeResumeFailedData(raw: Any?): ResumeFailedChannel {
+        val map = raw as? Map<*, *> ?: emptyMap<Any?, Any?>()
+        return ResumeFailedChannel(
+            channel = map["channel"] as? String ?: "",
+            code = map["code"] as? String ?: "",
+            reason = map["reason"] as? String ?: "",
+            expectedStreamId = map["expected_stream_id"] as? String,
+            currentStreamId = map["current_stream_id"] as? String,
+            oldestAvailableSerial = (map["oldest_available_serial"] as? Number)?.toLong(),
+            newestAvailableSerial = (map["newest_available_serial"] as? Number)?.toLong(),
+        )
+    }
+
+    private fun decodeResumeSuccessData(raw: Any?): ResumeSuccessData {
+        val map = raw as? Map<*, *> ?: emptyMap<Any?, Any?>()
+        val recovered =
+            (map["recovered"] as? List<*>)?.map(::decodeResumeRecoveredChannel) ?: emptyList()
+        val failed = (map["failed"] as? List<*>)?.map(::decodeResumeFailedData) ?: emptyList()
+        return ResumeSuccessData(recovered = recovered, failed = failed)
+    }
+
+    private fun decodeRewindCompleteData(raw: Any?): RewindCompleteData {
+        val map = raw as? Map<*, *> ?: emptyMap<Any?, Any?>()
+        return RewindCompleteData(
+            historicalCount = (map["historical_count"] as? Number)?.toInt() ?: 0,
+            liveCount = (map["live_count"] as? Number)?.toInt() ?: 0,
+            complete = map["complete"] as? Boolean ?: false,
+            truncatedByRetention = map["truncated_by_retention"] as? Boolean ?: false,
+            truncatedByLimit = map["truncated_by_limit"] as? Boolean ?: false,
+        )
     }
 
     private fun sendPing() {

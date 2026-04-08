@@ -43,6 +43,9 @@ class ProtocolWireFormatTest {
                     "event" to "sockudo:test",
                     "channel" to "chat:room-1",
                     "data" to linkedMapOf("hello" to "world", "count" to 3),
+                    "stream_id" to "stream-1",
+                    "message_id" to "msg-1",
+                    "serial" to 7,
                     "__delta_seq" to 7,
                     "__conflation_key" to "room",
                 ),
@@ -54,6 +57,9 @@ class ProtocolWireFormatTest {
         assertEquals("sockudo:test", decoded.event)
         assertEquals("chat:room-1", decoded.channel)
         assertEquals(mapOf("hello" to "world", "count" to 3L), decoded.data)
+        assertEquals("stream-1", decoded.streamId)
+        assertEquals("msg-1", decoded.messageId)
+        assertEquals(7L, decoded.serial)
         assertEquals(7, decoded.sequence)
         assertEquals("room", decoded.conflationKey)
     }
@@ -66,6 +72,9 @@ class ProtocolWireFormatTest {
                     "event" to "sockudo:test",
                     "channel" to "chat:room-1",
                     "data" to linkedMapOf("hello" to "world"),
+                    "stream_id" to "stream-2",
+                    "message_id" to "msg-2",
+                    "serial" to 9,
                     "__delta_seq" to 11,
                     "__conflation_key" to "btc",
                     "extras" to
@@ -82,11 +91,23 @@ class ProtocolWireFormatTest {
         assertEquals("sockudo:test", decoded.event)
         assertEquals("chat:room-1", decoded.channel)
         assertEquals(mapOf("hello" to "world"), decoded.data)
+        assertEquals("stream-2", decoded.streamId)
+        assertEquals("msg-2", decoded.messageId)
+        assertEquals(9L, decoded.serial)
         assertEquals(11, decoded.sequence)
         assertEquals("btc", decoded.conflationKey)
         assertEquals("eu", decoded.extras?.headers?.get("region"))
         assertEquals(5.0, decoded.extras?.headers?.get("ttl"))
         assertEquals(true, decoded.extras?.headers?.get("replay"))
         assertFalse(decoded.extras?.echo ?: true)
+    }
+
+    @Test
+    fun subscriptionRewindSerializesAsExpected() {
+        assertEquals(10, SubscriptionRewind.Count(10).subscriptionValue())
+        assertEquals(
+            mapOf("seconds" to 30),
+            SubscriptionRewind.Seconds(30).subscriptionValue(),
+        )
     }
 }

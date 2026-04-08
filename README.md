@@ -13,6 +13,7 @@ Official Kotlin client for Sockudo.
 - Filter-aware subscriptions
 - Fossil and Xdelta3/VCDIFF delta reconstruction
 - User sign-in and watchlist event handling
+- Continuity-aware connection recovery and subscribe-time rewind on Protocol V2
 - Live integration tests against Sockudo on `127.0.0.1:6001`
 - Gradle CI and Maven publication workflow
 
@@ -99,7 +100,42 @@ val channel =
             filter = Filter.eq("market", "spot"),
             delta = ChannelDeltaSettings(enabled = true, algorithm = DeltaAlgorithm.xdelta3),
         ),
+)
+```
+
+### Recovery And Rewind
+
+```kotlin
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            protocolVersion = 2,
+            forceTls = false,
+            wsHost = "127.0.0.1",
+            wsPort = 6001,
+            connectionRecovery = true,
+        ),
     )
+
+val channel =
+    client.subscribe(
+        "market:BTC",
+        SubscriptionOptions(rewind = SubscriptionRewind.Seconds(30)),
+    )
+
+channel.bind("message") { _, _ ->
+    println(client.getRecoveryPosition("market:BTC"))
+}
+
+client.bind("sockudo:resume_success") { data, _ ->
+    println(data)
+}
+
+channel.bind("sockudo:rewind_complete") { data, _ ->
+    println(data)
+}
 ```
 
 ### Encrypted Channels

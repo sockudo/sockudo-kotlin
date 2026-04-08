@@ -22,6 +22,7 @@ private val messagePackEnvelopeFields =
         "sequence",
         "conflation_key",
         "message_id",
+        "stream_id",
         "serial",
         "idempotency_key",
         "extras",
@@ -89,11 +90,12 @@ internal object ProtocolCodec {
             channel = envelope["channel"] as? String,
             data = data,
             userId = envelope["user_id"] as? String,
+            streamId = envelope["stream_id"] as? String,
             messageId = envelope["message_id"] as? String,
             rawMessage = decoded.rawMessage,
             sequence = (envelope["__delta_seq"] ?: envelope["sequence"]).asInt(),
             conflationKey = (envelope["__conflation_key"] ?: envelope["conflation_key"]) as? String,
-            serial = envelope["serial"].asInt(),
+            serial = envelope["serial"].asLong(),
             extras = decodeExtras(envelope["extras"]),
         )
     }
@@ -112,6 +114,7 @@ internal object ProtocolCodec {
                 envelope["sequence"],
                 envelope["conflation_key"],
                 envelope["message_id"],
+                envelope["stream_id"],
                 envelope["serial"],
                 envelope["idempotency_key"],
                 encodeMessagePackExtras(envelope["extras"]),
@@ -226,6 +229,9 @@ internal object ProtocolCodec {
         (envelope["message_id"] as? String)?.let {
             writer.writeString(9, it)
         }
+        (envelope["stream_id"] as? String)?.let {
+            writer.writeString(15, it)
+        }
         envelope["serial"].asLong()?.let {
             writer.writeUInt64(10, it)
         }
@@ -262,6 +268,7 @@ internal object ProtocolCodec {
                 98 -> envelope["extras"] = decodeProtoExtras(input.readByteArray())
                 104 -> envelope["__delta_seq"] = input.readUInt64().toLong()
                 114 -> envelope["__conflation_key"] = input.readString()
+                122 -> envelope["stream_id"] = input.readString()
                 else -> input.skipField(tag)
             }
         }

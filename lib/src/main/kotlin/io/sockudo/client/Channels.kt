@@ -21,6 +21,7 @@ open class SockudoChannel internal constructor(
         internal set
     var filter: FilterNode? = null
     var deltaSettings: ChannelDeltaSettings? = null
+    var rewind: SubscriptionRewind? = null
 
     fun on(eventName: String, callback: (Any?, EventMetadata?) -> Unit): EventBindingToken =
         dispatcher.bind(eventName, callback)
@@ -79,6 +80,7 @@ open class SockudoChannel internal constructor(
             auth.channelData?.let { payload["channel_data"] = it }
             filter?.let { payload["tags_filter"] = JsonSupport.fromJsonElement(JsonSupport.toJsonElement(it)) }
             deltaSettings?.let { payload["delta"] = it.subscriptionValue() }
+            rewind?.let { payload["rewind"] = it.subscriptionValue() }
             client.sendEvent(client.p.event("subscribe"), payload, null)
         } catch (error: Throwable) {
             subscriptionPending = false
