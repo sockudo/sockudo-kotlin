@@ -31,9 +31,8 @@ dependencies {
 }
 
 java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
-    }
+    sourceCompatibility = JavaVersion.VERSION_23
+    targetCompatibility = JavaVersion.VERSION_23
 
     withJavadocJar()
     withSourcesJar()
@@ -41,6 +40,7 @@ java {
 
 kotlin {
     compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_23)
         freeCompilerArgs.add("-Xjsr305=strict")
     }
 }
