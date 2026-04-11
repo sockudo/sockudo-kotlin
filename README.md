@@ -8,6 +8,7 @@ Official Kotlin client for Sockudo.
 
 - WebSocket-based `SockudoClient` built on OkHttp
 - Public, private, presence, and encrypted channels
+- Proxy-backed presence history and presence snapshot helpers
 - Channel authorization and user authentication
 - Client events on private channels
 - Filter-aware subscriptions
@@ -136,6 +137,35 @@ client.bind("sockudo:resume_success") { data, _ ->
 channel.bind("sockudo:rewind_complete") { data, _ ->
     println(data)
 }
+```
+
+### Presence History
+
+Client-side presence history is proxy-backed. The Kotlin client does not sign the server REST API directly; configure a backend endpoint that accepts `{channel, params, action}` and forwards the request with server credentials.
+
+```kotlin
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            forceTls = false,
+            wsHost = "127.0.0.1",
+            wsPort = 6001,
+            presenceHistory =
+                PresenceHistoryOptions(
+                    endpoint = "https://api.example.com/sockudo/presence-history",
+                ),
+        ),
+    )
+
+val channel = client.subscribe("presence-lobby") as PresenceChannel
+val page = channel.history(PresenceHistoryParams(limit = 50, direction = "newest_first"))
+if (page.hasNext()) {
+    val nextPage = page.next()
+}
+
+val snapshot = channel.snapshot(PresenceSnapshotParams(atSerial = 4))
 ```
 
 ### Encrypted Channels

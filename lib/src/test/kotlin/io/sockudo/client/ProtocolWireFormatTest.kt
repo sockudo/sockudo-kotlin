@@ -3,6 +3,7 @@ package io.sockudo.client
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ProtocolWireFormatTest {
     @Test
@@ -109,5 +110,54 @@ class ProtocolWireFormatTest {
             mapOf("seconds" to 30),
             SubscriptionRewind.Seconds(30).subscriptionValue(),
         )
+    }
+
+    @Test
+    fun presenceHistoryParamsNormalizeAblyAliases() {
+        assertEquals(
+            mapOf(
+                "direction" to "newest_first",
+                "limit" to 50,
+                "start_time_ms" to 1000L,
+                "end_time_ms" to 2000L,
+            ),
+            PresenceHistoryParams(
+                direction = "newest_first",
+                limit = 50,
+                start = 1000,
+                end = 2000,
+            ).toPayload(),
+        )
+    }
+
+    @Test
+    fun presenceHistoryPageNextUsesNextCursor() {
+        var capturedCursor: String? = null
+        val page =
+            PresenceHistoryPage(
+                items = emptyList(),
+                direction = "newest_first",
+                limit = 50,
+                hasMore = true,
+                nextCursor = "cursor-2",
+                bounds = PresenceHistoryBounds(null, null, null, null),
+                continuity = PresenceHistoryContinuity(null, null, null, null, null, 0, 0, false, true, false),
+                fetchNext = { cursor ->
+                    capturedCursor = cursor
+                    PresenceHistoryPage(
+                        items = emptyList(),
+                        direction = "newest_first",
+                        limit = 50,
+                        hasMore = false,
+                        nextCursor = null,
+                        bounds = PresenceHistoryBounds(null, null, null, null),
+                        continuity = PresenceHistoryContinuity(null, null, null, null, null, 0, 0, false, true, false),
+                    )
+                },
+            )
+
+        assertTrue(page.hasNext())
+        kotlinx.coroutines.runBlocking { page.next() }
+        assertEquals("cursor-2", capturedCursor)
     }
 }

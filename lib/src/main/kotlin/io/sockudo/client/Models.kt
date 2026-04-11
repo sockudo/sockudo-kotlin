@@ -157,6 +157,128 @@ data class PresenceMember(
     val info: Any?,
 )
 
+data class PresenceHistoryOptions(
+    val endpoint: String,
+    val headers: Map<String, String> = emptyMap(),
+    val headersProvider: (() -> Map<String, String>)? = null,
+)
+
+data class PresenceHistoryParams(
+    val direction: String? = null,
+    val limit: Int? = null,
+    val cursor: String? = null,
+    val startSerial: Long? = null,
+    val endSerial: Long? = null,
+    val startTimeMs: Long? = null,
+    val endTimeMs: Long? = null,
+    val start: Long? = null,
+    val end: Long? = null,
+) {
+    fun toPayload(): Map<String, Any> =
+        buildMap {
+            direction?.let { put("direction", it) }
+            limit?.let { put("limit", it) }
+            cursor?.let { put("cursor", it) }
+            startSerial?.let { put("start_serial", it) }
+            endSerial?.let { put("end_serial", it) }
+            when {
+                startTimeMs != null -> put("start_time_ms", startTimeMs)
+                start != null -> put("start_time_ms", start)
+            }
+            when {
+                endTimeMs != null -> put("end_time_ms", endTimeMs)
+                end != null -> put("end_time_ms", end)
+            }
+        }
+}
+
+data class PresenceSnapshotParams(
+    val atTimeMs: Long? = null,
+    val at: Long? = null,
+    val atSerial: Long? = null,
+) {
+    fun toPayload(): Map<String, Any> =
+        buildMap {
+            when {
+                atTimeMs != null -> put("at_time_ms", atTimeMs)
+                at != null -> put("at_time_ms", at)
+            }
+            atSerial?.let { put("at_serial", it) }
+        }
+}
+
+data class PresenceHistoryItem(
+    val streamId: String,
+    val serial: Long,
+    val publishedAtMs: Long,
+    val event: String,
+    val cause: String,
+    val userId: String,
+    val connectionId: String?,
+    val deadNodeId: String?,
+    val payloadSizeBytes: Int,
+    val presenceEvent: Map<String, Any?>,
+)
+
+data class PresenceHistoryBounds(
+    val startSerial: Long?,
+    val endSerial: Long?,
+    val startTimeMs: Long?,
+    val endTimeMs: Long?,
+)
+
+data class PresenceHistoryContinuity(
+    val streamId: String?,
+    val oldestAvailableSerial: Long?,
+    val newestAvailableSerial: Long?,
+    val oldestAvailablePublishedAtMs: Long?,
+    val newestAvailablePublishedAtMs: Long?,
+    val retainedEvents: Long,
+    val retainedBytes: Long,
+    val degraded: Boolean,
+    val complete: Boolean,
+    val truncatedByRetention: Boolean,
+)
+
+data class PresenceSnapshotMember(
+    val userId: String,
+    val lastEvent: String,
+    val lastEventSerial: Long,
+    val lastEventAtMs: Long,
+)
+
+data class PresenceSnapshot(
+    val channel: String,
+    val members: List<PresenceSnapshotMember>,
+    val memberCount: Int,
+    val eventsReplayed: Long,
+    val snapshotSerial: Long?,
+    val snapshotTimeMs: Long?,
+    val continuity: PresenceHistoryContinuity,
+)
+
+class PresenceHistoryPage internal constructor(
+    val items: List<PresenceHistoryItem>,
+    val direction: String,
+    val limit: Int,
+    val hasMore: Boolean,
+    val nextCursor: String?,
+    val bounds: PresenceHistoryBounds,
+    val continuity: PresenceHistoryContinuity,
+    private val fetchNext: (suspend (String) -> PresenceHistoryPage)? = null,
+) {
+    fun hasNext(): Boolean = hasMore && nextCursor != null
+
+    suspend fun next(): PresenceHistoryPage {
+        val cursor = nextCursor
+        val fetcher = fetchNext
+        if (!hasNext() || cursor == null || fetcher == null) {
+            throw SockudoException.InvalidOptions("No more pages available")
+        }
+        return fetcher(cursor)
+    }
+}
+
 data class SockudoOptions(
     val cluster: String,
     val protocolVersion: Int = 2,
@@ -179,6 +301,7 @@ data class SockudoOptions(
     val timelineParams: Map<String, AuthValue> = emptyMap(),
     val channelAuthorization: ChannelAuthorizationOptions = ChannelAuthorizationOptions(),
     val userAuthentication: UserAuthenticationOptions = UserAuthenticationOptions(),
+    val presenceHistory: PresenceHistoryOptions? = null,
     val deltaCompression: DeltaOptions? = null,
     val messageDeduplication: Boolean = true,
     val messageDeduplicationCapacity: Int = 1000,

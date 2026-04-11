@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -184,6 +185,48 @@ class SockudoClient(
     fun close() {
         disconnect()
         scope.cancel()
+    }
+
+    internal suspend fun fetchPresenceHistory(
+        channelName: String,
+        params: PresenceHistoryParams,
+    ): PresenceHistoryPage {
+        val config = options.presenceHistory
+            ?: throw SockudoException.UnsupportedFeature(
+                "presenceHistory.endpoint must be configured to use presence.history(). This endpoint should proxy requests to the Sockudo server REST API.",
+            )
+
+        val payload = performPresenceHistoryRequest(
+            endpoint = config.endpoint,
+            headers = config.headers + (config.headersProvider?.invoke() ?: emptyMap()),
+            channelName = channelName,
+            params = params.toPayload(),
+            action = "history",
+        )
+
+        return decodePresenceHistoryPage(payload) { cursor ->
+            fetchPresenceHistory(channelName, params.copy(cursor = cursor))
+        }
+    }
+
+    internal suspend fun fetchPresenceSnapshot(
+        channelName: String,
+        params: PresenceSnapshotParams,
+    ): PresenceSnapshot {
+        val config = options.presenceHistory
+            ?: throw SockudoException.UnsupportedFeature(
+                "presenceHistory.endpoint must be configured to use presence.snapshot(). This endpoint should proxy requests to the Sockudo server REST API.",
+            )
+
+        val payload = performPresenceHistoryRequest(
+            endpoint = config.endpoint,
+            headers = config.headers + (config.headersProvider?.invoke() ?: emptyMap()),
+            channelName = channelName,
+            params = params.toPayload(),
+            action = "snapshot",
+        )
+
+        return decodePresenceSnapshot(payload)
     }
 
     internal fun launchSubscription(block: suspend () -> Unit) {
@@ -799,5 +842,125 @@ class SockudoClient(
         Retry,
     }
 }
+
+private suspend fun SockudoClient.performPresenceHistoryRequest(
+    endpoint: String,
+    headers: Map<String, String>,
+    channelName: String,
+    params: Map<String, Any>,
+    action: String,
+): Map<String, Any?> {
+    val request =
+        Request.Builder()
+            .url(endpoint)
+            .post(
+                JsonSupport.encode(
+                    mapOf(
+                        "channel" to channelName,
+                        "params" to params,
+                        "action" to action,
+                    ),
+                ).toRequestBody("application/json".toMediaType()),
+            )
+            .apply {
+                headers.forEach { (name, value) -> addHeader(name, value) }
+                addHeader("Content-Type", "application/json")
+            }
+            .build()
+
+    val response = httpClient.newCall(request).execute()
+    response.use {
+        val body = it.body?.string().orEmpty()
+        if (!it.isSuccessful) {
+            throw SockudoException.InvalidOptions(
+                "Presence $action request failed (${it.code}): $body",
+            )
+        }
+        return JsonSupport.fromJsonElement(JsonSupport.decode(body)) as? Map<String, Any?>
+            ?: throw SockudoException.InvalidOptions(
+                "Presence $action endpoint returned invalid JSON",
+            )
+    }
+}
+
+private fun decodePresenceHistoryPage(
+    payload: Map<String, Any?>,
+    fetchNext: suspend (String) -> PresenceHistoryPage,
+): PresenceHistoryPage {
+    val items =
+        (payload["items"] as? List<*>).orEmpty()
+            .mapNotNull { it as? Map<String, Any?> }
+            .map { item ->
+                PresenceHistoryItem(
+                    streamId = item["stream_id"] as? String ?: "",
+                    serial = (item["serial"] as? Number)?.toLong() ?: 0L,
+                    publishedAtMs = (item["published_at_ms"] as? Number)?.toLong() ?: 0L,
+                    event = item["event"] as? String ?: "",
+                    cause = item["cause"] as? String ?: "",
+                    userId = item["user_id"] as? String ?: "",
+                    connectionId = item["connection_id"] as? String,
+                    deadNodeId = item["dead_node_id"] as? String,
+                    payloadSizeBytes = (item["payload_size_bytes"] as? Number)?.toInt() ?: 0,
+                    presenceEvent = item["presence_event"] as? Map<String, Any?> ?: emptyMap(),
+                )
+            }
+
+    return PresenceHistoryPage(
+        items = items,
+        direction = payload["direction"] as? String ?: "oldest_first",
+        limit = (payload["limit"] as? Number)?.toInt() ?: 0,
+        hasMore = payload["has_more"] as? Boolean ?: false,
+        nextCursor = payload["next_cursor"] as? String,
+        bounds = decodePresenceHistoryBounds(payload["bounds"] as? Map<String, Any?>),
+        continuity = decodePresenceHistoryContinuity(payload["continuity"] as? Map<String, Any?>),
+        fetchNext = fetchNext,
+    )
+}
+
+private fun decodePresenceSnapshot(payload: Map<String, Any?>): PresenceSnapshot {
+    val members =
+        (payload["members"] as? List<*>).orEmpty()
+            .mapNotNull { it as? Map<String, Any?> }
+            .map { member ->
+                PresenceSnapshotMember(
+                    userId = member["user_id"] as? String ?: "",
+                    lastEvent = member["last_event"] as? String ?: "",
+                    lastEventSerial = (member["last_event_serial"] as? Number)?.toLong() ?: 0L,
+                    lastEventAtMs = (member["last_event_at_ms"] as? Number)?.toLong() ?: 0L,
+                )
+            }
+
+    return PresenceSnapshot(
+        channel = payload["channel"] as? String ?: "",
+        members = members,
+        memberCount = (payload["member_count"] as? Number)?.toInt() ?: 0,
+        eventsReplayed = (payload["events_replayed"] as? Number)?.toLong() ?: 0L,
+        snapshotSerial = (payload["snapshot_serial"] as? Number)?.toLong(),
+        snapshotTimeMs = (payload["snapshot_time_ms"] as? Number)?.toLong(),
+        continuity = decodePresenceHistoryContinuity(payload["continuity"] as? Map<String, Any?>),
+    )
+}
+
+private fun decodePresenceHistoryBounds(payload: Map<String, Any?>?): PresenceHistoryBounds =
+    PresenceHistoryBounds(
+        startSerial = (payload?.get("start_serial") as? Number)?.toLong(),
+        endSerial = (payload?.get("end_serial") as? Number)?.toLong(),
+        startTimeMs = (payload?.get("start_time_ms") as? Number)?.toLong(),
+        endTimeMs = (payload?.get("end_time_ms") as? Number)?.toLong(),
+    )
+
+private fun decodePresenceHistoryContinuity(payload: Map<String, Any?>?): PresenceHistoryContinuity =
+    PresenceHistoryContinuity(
+        streamId = payload?.get("stream_id") as? String,
+        oldestAvailableSerial = (payload?.get("oldest_available_serial") as? Number)?.toLong(),
+        newestAvailableSerial = (payload?.get("newest_available_serial") as? Number)?.toLong(),
+        oldestAvailablePublishedAtMs = (payload?.get("oldest_available_published_at_ms") as? Number)?.toLong(),
+        newestAvailablePublishedAtMs = (payload?.get("newest_available_published_at_ms") as? Number)?.toLong(),
+        retainedEvents = (payload?.get("retained_events") as? Number)?.toLong() ?: 0L,
+        retainedBytes = (payload?.get("retained_bytes") as? Number)?.toLong() ?: 0L,
+        degraded = payload?.get("degraded") as? Boolean ?: false,
+        complete = payload?.get("complete") as? Boolean ?: false,
+        truncatedByRetention = payload?.get("truncated_by_retention") as? Boolean ?: false,
+    )
 
 private fun Long.milliseconds(): Duration = Duration.parse("${this}ms")

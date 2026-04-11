@@ -261,6 +261,12 @@ class PresenceChannel internal constructor(
         members.reset()
         super.disconnect()
     }
+
+    suspend fun history(params: PresenceHistoryParams = PresenceHistoryParams()): PresenceHistoryPage =
+        client.fetchPresenceHistory(name, params)
+
+    suspend fun snapshot(params: PresenceSnapshotParams = PresenceSnapshotParams()): PresenceSnapshot =
+        client.fetchPresenceSnapshot(name, params)
 }
 
 class EncryptedChannel internal constructor(
