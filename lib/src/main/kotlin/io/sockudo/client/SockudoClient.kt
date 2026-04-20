@@ -229,6 +229,73 @@ class SockudoClient(
         return decodePresenceSnapshot(payload)
     }
 
+    internal suspend fun fetchChannelHistory(
+        channelName: String,
+        params: ChannelHistoryParams,
+    ): ChannelHistoryPage {
+        val config = options.versionedMessages
+            ?: throw SockudoException.UnsupportedFeature(
+                "versionedMessages.endpoint must be configured to use channelHistory(). This endpoint should proxy requests to the Sockudo server REST API.",
+            )
+
+        val payload = performPresenceHistoryRequest(
+            endpoint = config.endpoint,
+            headers = config.headers + (config.headersProvider?.invoke() ?: emptyMap()),
+            channelName = channelName,
+            params = params.toPayload(),
+            action = "channel_history",
+        )
+
+        return decodeChannelHistoryPage(payload) { cursor ->
+            fetchChannelHistory(channelName, params.copy(cursor = cursor))
+        }
+    }
+
+    internal suspend fun fetchLatestMessage(
+        channelName: String,
+        messageSerial: String,
+    ): Map<String, Any?> {
+        val config = options.versionedMessages
+            ?: throw SockudoException.UnsupportedFeature(
+                "versionedMessages.endpoint must be configured to use getMessage(). This endpoint should proxy requests to the Sockudo server REST API.",
+            )
+
+        val payload = performPresenceHistoryRequest(
+            endpoint = config.endpoint,
+            headers = config.headers + (config.headersProvider?.invoke() ?: emptyMap()),
+            channelName = channelName,
+            params = emptyMap(),
+            action = "get_message",
+            messageSerial = messageSerial,
+        )
+
+        return payload["item"] as? Map<String, Any?> ?: emptyMap()
+    }
+
+    internal suspend fun fetchMessageVersions(
+        channelName: String,
+        messageSerial: String,
+        params: MessageVersionsParams,
+    ): MessageVersionsPage {
+        val config = options.versionedMessages
+            ?: throw SockudoException.UnsupportedFeature(
+                "versionedMessages.endpoint must be configured to use getMessageVersions(). This endpoint should proxy requests to the Sockudo server REST API.",
+            )
+
+        val payload = performPresenceHistoryRequest(
+            endpoint = config.endpoint,
+            headers = config.headers + (config.headersProvider?.invoke() ?: emptyMap()),
+            channelName = channelName,
+            params = params.toPayload(),
+            action = "get_message_versions",
+            messageSerial = messageSerial,
+        )
+
+        return decodeMessageVersionsPage(payload, channelName) { cursor ->
+            fetchMessageVersions(channelName, messageSerial, params.copy(cursor = cursor))
+        }
+    }
+
     internal fun launchSubscription(block: suspend () -> Unit) {
         scope.launch { block() }
     }
@@ -849,6 +916,7 @@ private suspend fun SockudoClient.performPresenceHistoryRequest(
     channelName: String,
     params: Map<String, Any>,
     action: String,
+    messageSerial: String? = null,
 ): Map<String, Any?> {
     val request =
         Request.Builder()
@@ -859,6 +927,7 @@ private suspend fun SockudoClient.performPresenceHistoryRequest(
                         "channel" to channelName,
                         "params" to params,
                         "action" to action,
+                        "messageSerial" to messageSerial,
                     ),
                 ).toRequestBody("application/json".toMediaType()),
             )
@@ -881,6 +950,46 @@ private suspend fun SockudoClient.performPresenceHistoryRequest(
                 "Presence $action endpoint returned invalid JSON",
             )
     }
+}
+
+private fun decodeChannelHistoryPage(
+    payload: Map<String, Any?>,
+    fetchNext: suspend (String) -> ChannelHistoryPage,
+): ChannelHistoryPage {
+    val items =
+        (payload["items"] as? List<*>).orEmpty()
+            .mapNotNull { it as? Map<String, Any?> }
+
+    return ChannelHistoryPage(
+        items = items,
+        direction = payload["direction"] as? String ?: "oldest_first",
+        limit = (payload["limit"] as? Number)?.toInt() ?: 0,
+        hasMore = payload["has_more"] as? Boolean ?: false,
+        nextCursor = payload["next_cursor"] as? String,
+        bounds = payload["bounds"] as? Map<String, Any?> ?: emptyMap(),
+        continuity = payload["continuity"] as? Map<String, Any?> ?: emptyMap(),
+        fetchNext = fetchNext,
+    )
+}
+
+private fun decodeMessageVersionsPage(
+    payload: Map<String, Any?>,
+    defaultChannel: String,
+    fetchNext: suspend (String) -> MessageVersionsPage,
+): MessageVersionsPage {
+    val items =
+        (payload["items"] as? List<*>).orEmpty()
+            .mapNotNull { it as? Map<String, Any?> }
+
+    return MessageVersionsPage(
+        channel = payload["channel"] as? String ?: defaultChannel,
+        items = items,
+        direction = payload["direction"] as? String ?: "oldest_first",
+        limit = (payload["limit"] as? Number)?.toInt() ?: 0,
+        hasMore = payload["has_more"] as? Boolean ?: false,
+        nextCursor = payload["next_cursor"] as? String,
+        fetchNext = fetchNext,
+    )
 }
 
 private fun decodePresenceHistoryPage(

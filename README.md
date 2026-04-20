@@ -139,6 +139,58 @@ channel.bind("sockudo:rewind_complete") { data, _ ->
 }
 ```
 
+### Mutable Messages (Release 4.3)
+
+Protocol V2 mutable messages use:
+
+- `sockudo:message.update`
+- `sockudo:message.delete`
+- `sockudo:message.append`
+
+Client rule:
+
+- `message.update` replaces local content with the full event payload
+- `message.delete` is the latest visible version and may carry `null` data
+- `message.append` concatenates onto the current local string state
+
+If you receive `message.append` before you have a string base, fetch the latest visible message first and seed local state before applying more appends.
+
+For historical inspection, use:
+
+- `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}` for the latest visible version
+- `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}/versions` for preserved versions in `version_serial` order
+
+```kotlin
+import io.sockudo.client.*
+
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            ws_host = "127.0.0.1",
+            ws_port = 6001,
+            protocolVersion = 2,
+        ),
+    )
+
+var state: MutableMessageState? = null
+
+val channel = client.subscribe("chat:room-1")
+channel.bindGlobal { eventName, data ->
+    val event = data as? SockudoEvent ?: return@bindGlobal
+    if (!isMutableMessageEvent(event)) return@bindGlobal
+    try {
+        state = reduceMutableMessageEvent(state, event)
+        println("${state?.messageSerial} ${state?.action} ${state?.data}")
+    } catch (e: IllegalStateException) {
+        println("mutable message reduction failed: ${e.message}")
+    }
+}
+
+client.connect()
+```
+
 ### Presence History
 
 Client-side presence history is proxy-backed. The Kotlin client does not sign the server REST API directly; configure a backend endpoint that accepts `{channel, params, action}` and forwards the request with server credentials.

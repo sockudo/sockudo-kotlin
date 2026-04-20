@@ -163,6 +163,12 @@ data class PresenceHistoryOptions(
     val headersProvider: (() -> Map<String, String>)? = null,
 )
 
+data class VersionedMessagesOptions(
+    val endpoint: String,
+    val headers: Map<String, String> = emptyMap(),
+    val headersProvider: (() -> Map<String, String>)? = null,
+)
+
 data class PresenceHistoryParams(
     val direction: String? = null,
     val limit: Int? = null,
@@ -257,6 +263,77 @@ data class PresenceSnapshot(
     val continuity: PresenceHistoryContinuity,
 )
 
+data class ChannelHistoryParams(
+    val direction: String? = null,
+    val limit: Int? = null,
+    val cursor: String? = null,
+    val startSerial: Long? = null,
+    val endSerial: Long? = null,
+    val startTimeMs: Long? = null,
+    val endTimeMs: Long? = null,
+) {
+    fun toPayload(): Map<String, Any> =
+        buildMap {
+            direction?.let { put("direction", it) }
+            limit?.let { put("limit", it) }
+            cursor?.let { put("cursor", it) }
+            startSerial?.let { put("start_serial", it) }
+            endSerial?.let { put("end_serial", it) }
+            startTimeMs?.let { put("start_time_ms", it) }
+            endTimeMs?.let { put("end_time_ms", it) }
+        }
+}
+
+class ChannelHistoryPage internal constructor(
+    val items: List<Map<String, Any?>>,
+    val direction: String,
+    val limit: Int,
+    val hasMore: Boolean,
+    val nextCursor: String?,
+    val bounds: Map<String, Any?>,
+    val continuity: Map<String, Any?>,
+    private val fetchNext: (suspend (String) -> ChannelHistoryPage)? = null,
+) {
+    fun hasNext(): Boolean = hasMore && nextCursor != null
+
+    suspend fun next(): ChannelHistoryPage {
+        val cursor = nextCursor ?: throw IllegalStateException("No more pages available")
+        val callback = fetchNext ?: throw IllegalStateException("No page fetcher configured")
+        return callback(cursor)
+    }
+}
+
+data class MessageVersionsParams(
+    val direction: String? = null,
+    val limit: Int? = null,
+    val cursor: String? = null,
+) {
+    fun toPayload(): Map<String, Any> =
+        buildMap {
+            direction?.let { put("direction", it) }
+            limit?.let { put("limit", it) }
+            cursor?.let { put("cursor", it) }
+        }
+}
+
+class MessageVersionsPage internal constructor(
+    val channel: String,
+    val items: List<Map<String, Any?>>,
+    val direction: String,
+    val limit: Int,
+    val hasMore: Boolean,
+    val nextCursor: String?,
+    private val fetchNext: (suspend (String) -> MessageVersionsPage)? = null,
+) {
+    fun hasNext(): Boolean = hasMore && nextCursor != null
+
+    suspend fun next(): MessageVersionsPage {
+        val cursor = nextCursor ?: throw IllegalStateException("No more pages available")
+        val callback = fetchNext ?: throw IllegalStateException("No page fetcher configured")
+        return callback(cursor)
+    }
+}
+
 class PresenceHistoryPage internal constructor(
     val items: List<PresenceHistoryItem>,
     val direction: String,
@@ -302,6 +379,7 @@ data class SockudoOptions(
     val channelAuthorization: ChannelAuthorizationOptions = ChannelAuthorizationOptions(),
     val userAuthentication: UserAuthenticationOptions = UserAuthenticationOptions(),
     val presenceHistory: PresenceHistoryOptions? = null,
+    val versionedMessages: VersionedMessagesOptions? = null,
     val deltaCompression: DeltaOptions? = null,
     val messageDeduplication: Boolean = true,
     val messageDeduplicationCapacity: Int = 1000,

@@ -166,7 +166,7 @@ object SockudoLogger {
     }
 }
 
-internal data class SockudoEvent(
+data class SockudoEvent(
     val event: String,
     val channel: String? = null,
     val data: Any? = null,

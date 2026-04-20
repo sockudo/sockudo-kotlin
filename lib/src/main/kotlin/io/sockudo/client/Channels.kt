@@ -94,6 +94,17 @@ open class SockudoChannel internal constructor(
         }
     }
 
+    suspend fun channelHistory(params: ChannelHistoryParams = ChannelHistoryParams()): ChannelHistoryPage =
+        client.fetchChannelHistory(name, params)
+
+    suspend fun getMessage(messageSerial: String): Map<String, Any?> =
+        client.fetchLatestMessage(name, messageSerial)
+
+    suspend fun getMessageVersions(
+        messageSerial: String,
+        params: MessageVersionsParams = MessageVersionsParams(),
+    ): MessageVersionsPage = client.fetchMessageVersions(name, messageSerial, params)
+
     internal open fun unsubscribe() {
         isSubscribed = false
         client.sendEvent(client.p.event("unsubscribe"), mapOf("channel" to name), null)
