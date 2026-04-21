@@ -62,6 +62,12 @@ channel.bind("price-updated") { data, _ ->
 client.connect()
 ```
 
+Protocol V2 heartbeat behavior:
+
+- Sockudo servers use native WebSocket ping/pong frames for automatic heartbeat traffic
+- Kotlin/JVM runtimes may still use lightweight `sockudo:ping` / `sockudo:pong` fallback messages for client-side activity checks when the underlying transport does not expose a direct ping API
+- fallback heartbeat messages are intentionally excluded from V2 recovery metadata such as `message_id`, `serial`, and `stream_id`
+
 ## Advanced Usage
 
 ### Channel Auth

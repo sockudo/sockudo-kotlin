@@ -6,21 +6,95 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.Base64
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import okhttp3.RequestBody.Companion.toRequestBody
 
 class LiveIntegrationTest {
     private val httpClient = OkHttpClient()
+
+    @Test
+    fun rawV2HeartbeatUsesControlFramesOnIdle() =
+        runBlocking {
+            if (!liveTestsEnabled()) {
+                return@runBlocking
+            }
+
+            val (socket, messages, closeCodes) = openRawSocket(protocolVersion = 2)
+            try {
+                val handshake = decodeRawEvent(waitForRawMessage(messages, timeoutMs = 3000))
+                assertEquals("sockudo:connection_established", handshake.event)
+
+                val unexpected = waitForRawMessage(messages, timeoutMs = 8000)
+                assertEquals(null, unexpected, "Expected no protocol heartbeat messages on idle V2 connection")
+                assertEquals(null, closeCodes.poll())
+            } finally {
+                socket.close(1000, "done")
+            }
+        }
+
+    @Test
+    fun rawV2FallbackPongHasNoMetadata() =
+        runBlocking {
+            if (!liveTestsEnabled()) {
+                return@runBlocking
+            }
+
+            val (socket, messages, _) = openRawSocket(protocolVersion = 2)
+            try {
+                val handshake = decodeRawEvent(waitForRawMessage(messages, timeoutMs = 3000))
+                assertEquals("sockudo:connection_established", handshake.event)
+
+                socket.send("""{"event":"sockudo:ping","data":{}}""")
+                val pong = decodeRawEvent(waitForRawMessage(messages, timeoutMs = 3000))
+                assertEquals("sockudo:pong", pong.event)
+                assertEquals(null, pong.messageId)
+                assertEquals(null, pong.serial)
+                assertEquals(null, pong.streamId)
+            } finally {
+                socket.close(1000, "done")
+            }
+        }
+
+    @Test
+    fun rawV1HeartbeatStillUsesProtocolPing() =
+        runBlocking {
+            if (!liveTestsEnabled()) {
+                return@runBlocking
+            }
+
+            val (socket, messages, closeCodes) = openRawSocket(protocolVersion = 7)
+            try {
+                val handshake = decodeRawEvent(waitForRawMessage(messages, timeoutMs = 3000))
+                assertEquals("pusher:connection_established", handshake.event)
+
+                val ping = decodeRawEvent(waitForRawMessage(messages, timeoutMs = 6000))
+                assertEquals("pusher:ping", ping.event)
+
+                socket.send("""{"event":"pusher:pong","data":{}}""")
+                delay(1500)
+                assertFalse(closeCodes.contains(4201), "Socket should remain open after replying to V1 ping")
+            } finally {
+                socket.close(1000, "done")
+            }
+        }
 
     @Test
     fun localSockudoConnectsAndReceivesPublishedEvent() =
@@ -233,6 +307,59 @@ class LiveIntegrationTest {
             "protobuf", "proto" -> SockudoWireFormat.protobuf
             else -> SockudoWireFormat.json
         }
+
+    private fun rawSocketUrl(protocolVersion: Int): String {
+        val query =
+            buildList {
+                add("protocol=$protocolVersion")
+                add("client=kotlin-live")
+                add("version=1.0.0")
+                if (protocolVersion == 2) {
+                    add("format=json")
+                }
+            }.joinToString("&")
+        return "ws://127.0.0.1:6001/app/app-key?$query"
+    }
+
+    private fun openRawSocket(protocolVersion: Int): Triple<WebSocket, LinkedBlockingQueue<String>, LinkedBlockingQueue<Int>> {
+        val messages = LinkedBlockingQueue<String>()
+        val closeCodes = LinkedBlockingQueue<Int>()
+        val request = Request.Builder().url(rawSocketUrl(protocolVersion)).build()
+        val socket =
+            httpClient.newWebSocket(
+                request,
+                object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) = Unit
+
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        messages.offer(text)
+                    }
+
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        closeCodes.offer(code)
+                    }
+
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        closeCodes.offer(code)
+                    }
+
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        messages.offer("""{"event":"failure","data":{"message":"${t.message}"}}""")
+                    }
+                },
+            )
+        return Triple(socket, messages, closeCodes)
+    }
+
+    private suspend fun waitForRawMessage(messages: LinkedBlockingQueue<String>, timeoutMs: Long): String? =
+        withContext(Dispatchers.IO) {
+            messages.poll(timeoutMs, TimeUnit.MILLISECONDS)
+        }
+
+    private fun decodeRawEvent(rawMessage: String?): SockudoEvent {
+        requireNotNull(rawMessage) { "Timed out waiting for websocket message" }
+        return ProtocolCodec.decodeEvent(rawMessage, SockudoWireFormat.json)
+    }
 
     private fun publishToLocalSockudo(channel: String, eventName: String, payload: Map<String, Any>) {
         val bodyObject =
