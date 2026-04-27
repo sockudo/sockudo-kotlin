@@ -335,8 +335,17 @@ class SockudoClient(
         currentTransport = transport
         val url = socketUrl(transport)
         val request = Request.Builder().url(url).build()
+        val webSocketClient =
+            if (options.protocolVersion >= 2) {
+                httpClient
+                    .newBuilder()
+                    .pingInterval(config.activityTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
+                    .build()
+            } else {
+                httpClient
+            }
         webSocket =
-            httpClient.newWebSocket(
+            webSocketClient.newWebSocket(
                 request,
                 object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: Response) = Unit
@@ -607,6 +616,9 @@ class SockudoClient(
     }
 
     private fun sendPing() {
+        if (options.protocolVersion >= 2) {
+            return
+        }
         sendEvent(p.event("ping"), emptyMap<String, Any>(), null)
         invalidateActivityTimer()
         activityJob =
@@ -618,6 +630,9 @@ class SockudoClient(
 
     private fun resetActivityTimer() {
         invalidateActivityTimer()
+        if (options.protocolVersion >= 2) {
+            return
+        }
         activityJob =
             scope.launch {
                 delay(config.activityTimeout)
