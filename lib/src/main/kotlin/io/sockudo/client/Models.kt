@@ -73,6 +73,7 @@ data class SubscriptionOptions(
     val delta: ChannelDeltaSettings? = null,
     val events: List<String>? = null,
     val rewind: SubscriptionRewind? = null,
+    val annotationSubscribe: Boolean = false,
 )
 
 sealed class SubscriptionRewind {
@@ -328,6 +329,67 @@ class MessageVersionsPage internal constructor(
     fun hasNext(): Boolean = hasMore && nextCursor != null
 
     suspend fun next(): MessageVersionsPage {
+        val cursor = nextCursor ?: throw IllegalStateException("No more pages available")
+        val callback = fetchNext ?: throw IllegalStateException("No page fetcher configured")
+        return callback(cursor)
+    }
+}
+
+data class PublishAnnotationRequest(
+    val type: String,
+    val name: String? = null,
+    val clientId: String? = null,
+    val socketId: String? = null,
+    val count: Long? = null,
+    val data: Any? = null,
+    val encoding: String? = null,
+) {
+    fun toPayload(): Map<String, Any?> =
+        buildMap {
+            put("type", type)
+            name?.let { put("name", it) }
+            clientId?.let { put("clientId", it) }
+            socketId?.let { put("socketId", it) }
+            count?.let { put("count", it) }
+            data?.let { put("data", it) }
+            encoding?.let { put("encoding", it) }
+        }
+}
+
+data class PublishAnnotationResponse(val annotationSerial: String)
+
+data class DeleteAnnotationResponse(
+    val annotationSerial: String,
+    val deletedAnnotationSerial: String,
+)
+
+data class AnnotationEventsParams(
+    val type: String? = null,
+    val limit: Int? = null,
+    val fromSerial: String? = null,
+    val socketId: String? = null,
+) {
+    fun toPayload(): Map<String, Any> =
+        buildMap {
+            type?.let { put("type", it) }
+            limit?.let { put("limit", it) }
+            fromSerial?.let { put("fromSerial", it) }
+            socketId?.let { put("socketId", it) }
+        }
+}
+
+class AnnotationEventsPage internal constructor(
+    val channel: String,
+    val messageSerial: String,
+    val limit: Int,
+    val hasMore: Boolean,
+    val nextCursor: String?,
+    val items: List<Map<String, Any?>>,
+    private val fetchNext: (suspend (String) -> AnnotationEventsPage)? = null,
+) {
+    fun hasNext(): Boolean = hasMore && nextCursor != null
+
+    suspend fun next(): AnnotationEventsPage {
         val cursor = nextCursor ?: throw IllegalStateException("No more pages available")
         val callback = fetchNext ?: throw IllegalStateException("No page fetcher configured")
         return callback(cursor)

@@ -101,7 +101,9 @@ class SockudoClient(
         options?.let {
             channel.filter = it.filter
             channel.deltaSettings = it.delta
+            channel.eventsFilter = it.events
             channel.rewind = it.rewind
+            channel.annotationSubscribe = it.annotationSubscribe
         }
         channel.subscribeIfPossible()
         return channel
@@ -293,6 +295,81 @@ class SockudoClient(
 
         return decodeMessageVersionsPage(payload, channelName) { cursor ->
             fetchMessageVersions(channelName, messageSerial, params.copy(cursor = cursor))
+        }
+    }
+
+    internal suspend fun publishAnnotation(
+        channelName: String,
+        messageSerial: String,
+        annotation: PublishAnnotationRequest,
+    ): PublishAnnotationResponse {
+        val config = options.versionedMessages
+            ?: throw SockudoException.UnsupportedFeature(
+                "versionedMessages.endpoint must be configured to use publishAnnotation(). This endpoint should proxy requests to the Sockudo server REST API.",
+            )
+
+        val payload = performPresenceHistoryRequest(
+            endpoint = config.endpoint,
+            headers = config.headers + (config.headersProvider?.invoke() ?: emptyMap()),
+            channelName = channelName,
+            params = emptyMap(),
+            action = "publish_annotation",
+            messageSerial = messageSerial,
+            annotation = annotation.toPayload(),
+        )
+
+        return PublishAnnotationResponse(payload["annotationSerial"] as? String ?: "")
+    }
+
+    internal suspend fun deleteAnnotation(
+        channelName: String,
+        messageSerial: String,
+        annotationSerial: String,
+        socketId: String? = null,
+    ): DeleteAnnotationResponse {
+        val config = options.versionedMessages
+            ?: throw SockudoException.UnsupportedFeature(
+                "versionedMessages.endpoint must be configured to use deleteAnnotation(). This endpoint should proxy requests to the Sockudo server REST API.",
+            )
+
+        val payload = performPresenceHistoryRequest(
+            endpoint = config.endpoint,
+            headers = config.headers + (config.headersProvider?.invoke() ?: emptyMap()),
+            channelName = channelName,
+            params = emptyMap(),
+            action = "delete_annotation",
+            messageSerial = messageSerial,
+            annotationSerial = annotationSerial,
+            socketId = socketId,
+        )
+
+        return DeleteAnnotationResponse(
+            annotationSerial = payload["annotationSerial"] as? String ?: "",
+            deletedAnnotationSerial = payload["deletedAnnotationSerial"] as? String ?: "",
+        )
+    }
+
+    internal suspend fun listAnnotations(
+        channelName: String,
+        messageSerial: String,
+        params: AnnotationEventsParams,
+    ): AnnotationEventsPage {
+        val config = options.versionedMessages
+            ?: throw SockudoException.UnsupportedFeature(
+                "versionedMessages.endpoint must be configured to use listAnnotations(). This endpoint should proxy requests to the Sockudo server REST API.",
+            )
+
+        val payload = performPresenceHistoryRequest(
+            endpoint = config.endpoint,
+            headers = config.headers + (config.headersProvider?.invoke() ?: emptyMap()),
+            channelName = channelName,
+            params = params.toPayload(),
+            action = "list_annotations",
+            messageSerial = messageSerial,
+        )
+
+        return decodeAnnotationEventsPage(payload, channelName, messageSerial) { cursor ->
+            listAnnotations(channelName, messageSerial, params.copy(fromSerial = cursor))
         }
     }
 
@@ -917,6 +994,9 @@ private suspend fun SockudoClient.performPresenceHistoryRequest(
     params: Map<String, Any>,
     action: String,
     messageSerial: String? = null,
+    annotationSerial: String? = null,
+    socketId: String? = null,
+    annotation: Map<String, Any?>? = null,
 ): Map<String, Any?> {
     val request =
         Request.Builder()
@@ -928,6 +1008,9 @@ private suspend fun SockudoClient.performPresenceHistoryRequest(
                         "params" to params,
                         "action" to action,
                         "messageSerial" to messageSerial,
+                        "annotationSerial" to annotationSerial,
+                        "socketId" to socketId,
+                        "annotation" to annotation,
                     ),
                 ).toRequestBody("application/json".toMediaType()),
             )
@@ -988,6 +1071,27 @@ private fun decodeMessageVersionsPage(
         limit = (payload["limit"] as? Number)?.toInt() ?: 0,
         hasMore = payload["has_more"] as? Boolean ?: false,
         nextCursor = payload["next_cursor"] as? String,
+        fetchNext = fetchNext,
+    )
+}
+
+private fun decodeAnnotationEventsPage(
+    payload: Map<String, Any?>,
+    defaultChannel: String,
+    defaultMessageSerial: String,
+    fetchNext: suspend (String) -> AnnotationEventsPage,
+): AnnotationEventsPage {
+    val items =
+        (payload["items"] as? List<*>).orEmpty()
+            .mapNotNull { it as? Map<String, Any?> }
+
+    return AnnotationEventsPage(
+        channel = payload["channel"] as? String ?: defaultChannel,
+        messageSerial = payload["messageSerial"] as? String ?: defaultMessageSerial,
+        limit = (payload["limit"] as? Number)?.toInt() ?: 0,
+        hasMore = payload["hasMore"] as? Boolean ?: false,
+        nextCursor = payload["nextCursor"] as? String,
+        items = items,
         fetchNext = fetchNext,
     )
 }
