@@ -21,7 +21,9 @@ open class SockudoChannel internal constructor(
         internal set
     var filter: FilterNode? = null
     var deltaSettings: ChannelDeltaSettings? = null
+    var eventsFilter: List<String>? = null
     var rewind: SubscriptionRewind? = null
+    var annotationSubscribe: Boolean = false
 
     fun on(eventName: String, callback: (Any?, EventMetadata?) -> Unit): EventBindingToken =
         dispatcher.bind(eventName, callback)
@@ -80,7 +82,11 @@ open class SockudoChannel internal constructor(
             auth.channelData?.let { payload["channel_data"] = it }
             filter?.let { payload["tags_filter"] = JsonSupport.fromJsonElement(JsonSupport.toJsonElement(it)) }
             deltaSettings?.let { payload["delta"] = it.subscriptionValue() }
+            eventsFilter?.let { payload["events"] = it }
             rewind?.let { payload["rewind"] = it.subscriptionValue() }
+            if (annotationSubscribe) {
+                payload["modes"] = listOf("SUBSCRIBE", "ANNOTATION_SUBSCRIBE")
+            }
             client.sendEvent(client.p.event("subscribe"), payload, null)
         } catch (error: Throwable) {
             subscriptionPending = false
@@ -104,6 +110,22 @@ open class SockudoChannel internal constructor(
         messageSerial: String,
         params: MessageVersionsParams = MessageVersionsParams(),
     ): MessageVersionsPage = client.fetchMessageVersions(name, messageSerial, params)
+
+    suspend fun publishAnnotation(
+        messageSerial: String,
+        annotation: PublishAnnotationRequest,
+    ): PublishAnnotationResponse = client.publishAnnotation(name, messageSerial, annotation)
+
+    suspend fun deleteAnnotation(
+        messageSerial: String,
+        annotationSerial: String,
+        socketId: String? = null,
+    ): DeleteAnnotationResponse = client.deleteAnnotation(name, messageSerial, annotationSerial, socketId)
+
+    suspend fun listAnnotations(
+        messageSerial: String,
+        params: AnnotationEventsParams = AnnotationEventsParams(),
+    ): AnnotationEventsPage = client.listAnnotations(name, messageSerial, params)
 
     internal open fun unsubscribe() {
         isSubscribed = false
@@ -131,6 +153,21 @@ open class SockudoChannel internal constructor(
             event.event == p.internal_("subscription_count") -> {
                 subscriptionCount = (event.data as? Map<*, *>)?.get("subscription_count") as? Int
                 dispatcher.emit(p.event("subscription_count"), event.data)
+            }
+
+            event.event == p.internal_("message") -> {
+                val data = event.data as? Map<*, *>
+                if (data?.get("action") == "message.summary") {
+                    dispatcher.emit("message.summary", event.data)
+                }
+            }
+
+            event.event == p.internal_("annotation") -> {
+                val data = event.data as? Map<*, *>
+                val action = data?.get("action") as? String
+                if (action != null) {
+                    dispatcher.emit(action, event.data)
+                }
             }
 
             else -> {
