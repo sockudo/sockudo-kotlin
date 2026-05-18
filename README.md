@@ -226,6 +226,44 @@ if (page.hasNext()) {
 val snapshot = channel.snapshot(PresenceSnapshotParams(atSerial = 4))
 ```
 
+### Push Proxy Helpers
+
+Push registration and publish helpers are HTTP/proxy surfaces. Keep app secrets on your backend, not in the mobile client, and point the helper at your own proxy/admin endpoint.
+
+- `publish()` and `publishBatch()` always force async delivery with `sync = false`
+- expect `202 Accepted` responses with a `publish_id` for publish calls
+- list helpers use cursor pagination via `limit` and `cursor`
+
+```kotlin
+import io.sockudo.client.PushRegistrationOptions
+import io.sockudo.client.PushSubscriptionParams
+import io.sockudo.client.SockudoPushRegistration
+import kotlinx.coroutines.runBlocking
+
+val push =
+    SockudoPushRegistration(
+        PushRegistrationOptions(
+            endpoint = "https://api.example.com/sockudo/push",
+            headers = mapOf("Authorization" to "Bearer session-token"),
+        ),
+    )
+
+runBlocking {
+    val publish =
+        push.publish(
+            mapOf(
+                "recipients" to listOf(mapOf("type" to "channel", "channel" to "orders")),
+                "payload" to mapOf("title" to "Order updated", "body" to "Ready for pickup"),
+            ),
+        )
+
+    println(publish["publish_id"])
+
+    val page = push.listChannelSubscriptions(PushSubscriptionParams(deviceId = "device-1", limit = 20))
+    println(page["next_cursor"])
+}
+```
+
 ### Encrypted Channels
 
 `private-encrypted-*` channels use the `shared_secret` returned by your auth handler. Payload decryption is handled automatically.
